@@ -368,9 +368,9 @@ class ReplayBuffer:
             self._sampler.update_priority(index, priority)
 
     @pin_memory_output
-    def _sample(self, batch_size: int) -> Tuple[Any, dict]:
+    def _sample(self, batch_size: int, **kwargs) -> Tuple[Any, dict]:
         with self._replay_lock:
-            index, info = self._sampler.sample(self._storage, batch_size)
+            index, info = self._sampler.sample(self._storage, batch_size, **kwargs)
             info["index"] = index
             data = self._storage[index]
         if not isinstance(index, INT_CLASSES):
@@ -398,7 +398,7 @@ class ReplayBuffer:
         self._storage._empty()
 
     def sample(
-        self, batch_size: Optional[int] = None, return_info: bool = False
+        self, batch_size: Optional[int] = None, return_info: bool = False, **kwargs
     ) -> Any:
         """Samples a batch of data from the replay buffer.
 
@@ -437,17 +437,17 @@ class ReplayBuffer:
                 "for a proper usage of the batch-size arguments."
             )
         if not self._prefetch:
-            ret = self._sample(batch_size)
+            ret = self._sample(batch_size, **kwargs)
         else:
             if len(self._prefetch_queue) == 0:
-                ret = self._sample(batch_size)
+                ret = self._sample(batch_size, **kwargs)
             else:
                 with self._futures_lock:
                     ret = self._prefetch_queue.popleft().result()
 
             with self._futures_lock:
                 while len(self._prefetch_queue) < self._prefetch_cap:
-                    fut = self._prefetch_executor.submit(self._sample, batch_size)
+                    fut = self._prefetch_executor.submit(self._sample, batch_size, **kwargs)
                     self._prefetch_queue.append(fut)
 
         if return_info:
@@ -527,7 +527,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
     Args:
         alpha (float): exponent α determines how much prioritization is used,
             with α = 0 corresponding to the uniform case.
-        beta (float): importance sampling negative exponent.
+        beta (float): default importance sampling negative exponent (used if not specified in sample() method).
         eps (float): delta added to the priorities to ensure that the buffer
             does not contain null priorities.
         storage (Storage, optional): the storage to be used. If none is provided
@@ -857,6 +857,7 @@ class TensorDictReplayBuffer(ReplayBuffer):
         batch_size: Optional[int] = None,
         return_info: bool = False,
         include_info: bool = None,
+        **kwargs
     ) -> TensorDictBase:
         """Samples a batch of data from the replay buffer.
 
@@ -881,7 +882,7 @@ class TensorDictReplayBuffer(ReplayBuffer):
                 "output tensordict."
             )
 
-        data, info = super().sample(batch_size, return_info=True)
+        data, info = super().sample(batch_size, return_info=True, **kwargs)
         if not is_tensorclass(data) and include_info in (True, None):
             is_locked = data.is_locked
             if is_locked:
@@ -906,7 +907,7 @@ class TensorDictPrioritizedReplayBuffer(TensorDictReplayBuffer):
     Keyword Args:
         alpha (float): exponent α determines how much prioritization is used,
             with α = 0 corresponding to the uniform case.
-        beta (float): importance sampling negative exponent.
+        beta (float): importance sampling negative exponent (used if not specified in sample() method).
         eps (float): delta added to the priorities to ensure that the buffer
             does not contain null priorities.
         storage (Storage, optional): the storage to be used. If none is provided
@@ -1048,9 +1049,10 @@ class RemoteTensorDictReplayBuffer(TensorDictReplayBuffer):
         batch_size: Optional[int] = None,
         include_info: bool = None,
         return_info: bool = False,
+        **kwargs
     ) -> TensorDictBase:
         return super().sample(
-            batch_size=batch_size, include_info=include_info, return_info=return_info
+            batch_size=batch_size, include_info=include_info, return_info=return_info, **kwargs
         )
 
     def add(self, data: TensorDictBase) -> int:
