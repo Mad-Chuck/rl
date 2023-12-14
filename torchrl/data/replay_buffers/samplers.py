@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from copy import copy, deepcopy
 from multiprocessing.context import get_spawning_popen
 from pathlib import Path
-from typing import Any, Dict, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -37,7 +37,7 @@ class Sampler(ABC):
     """A generic sampler base class for composable Replay Buffers."""
 
     @abstractmethod
-    def sample(self, storage: Storage, batch_size: int) -> Tuple[Any, dict]:
+    def sample(self, storage: Storage, batch_size: int, **kwargs) -> Tuple[Any, dict]:
         ...
 
     def add(self, index: int) -> None:
@@ -91,7 +91,7 @@ class RandomSampler(Sampler):
 
     """
 
-    def sample(self, storage: Storage, batch_size: int) -> Tuple[torch.Tensor, dict]:
+    def sample(self, storage: Storage, batch_size: int, **kwargs) -> Tuple[torch.Tensor, dict]:
         if len(storage) == 0:
             raise RuntimeError(_EMPTY_STORAGE_ERROR)
         index = torch.randint(0, len(storage), (batch_size,))
@@ -173,7 +173,7 @@ class SamplerWithoutReplacement(Sampler):
             self._ran_out = False
         return index
 
-    def sample(self, storage: Storage, batch_size: int) -> Tuple[Any, dict]:
+    def sample(self, storage: Storage, batch_size: int, **kwargs) -> Tuple[Any, dict]:
         len_storage = len(storage)
         if len_storage == 0:
             raise RuntimeError(_EMPTY_STORAGE_ERROR)
@@ -219,7 +219,7 @@ class PrioritizedSampler(Sampler):
     Args:
         alpha (float): exponent α determines how much prioritization is used,
             with α = 0 corresponding to the uniform case.
-        beta (float): importance sampling negative exponent.
+        beta (float): importance sampling negative exponent (used if not specified in sample() method)..
         eps (float, optional): delta added to the priorities to ensure that the buffer
             does not contain null priorities. Defaults to 1e-8.
         reduction (str, optional): the reduction method for multidimensional
@@ -280,7 +280,7 @@ class PrioritizedSampler(Sampler):
     def default_priority(self) -> float:
         return (self._max_priority + self._eps) ** self._alpha
 
-    def sample(self, storage: Storage, batch_size: int) -> torch.Tensor:
+    def sample(self, storage: Storage, batch_size: int, beta: Optional[float] = None, **kwargs) -> torch.Tensor:
         if len(storage) == 0:
             raise RuntimeError(_EMPTY_STORAGE_ERROR)
         p_sum = self._sum_tree.query(0, len(storage))
@@ -298,6 +298,8 @@ class PrioritizedSampler(Sampler):
         else:
             index = np.clip(index, None, len(storage) - 1)
         weight = self._sum_tree[index]
+        if beta is None:
+            beta = self._beta
 
         # Importance sampling weight formula:
         #   w_i = (p_i / sum(p) * N) ^ (-beta)
@@ -306,8 +308,8 @@ class PrioritizedSampler(Sampler):
         #       ((min(p) / sum(p) * N) ^ (-beta))
         #   weight_i = ((p_i / sum(p) * N) / (min(p) / sum(p) * N)) ^ (-beta)
         #   weight_i = (p_i / min(p)) ^ (-beta)
-        # weight = np.power(weight / (p_min + self._eps), -self._beta)
-        weight = np.power(weight / p_min, -self._beta)
+        # weight = np.power(weight / (p_min + self._eps), beta)
+        weight = np.power(weight / p_min, beta)
         return index, {"_weight": weight}
 
     def _add_or_extend(self, index: Union[int, torch.Tensor]) -> None:
